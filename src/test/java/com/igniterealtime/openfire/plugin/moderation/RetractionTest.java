@@ -150,6 +150,59 @@ class RetractionTest {
     }
 
     @Test
+    @DisplayName("a tombstone read back from the archive replays as what Conversations acts on")
+    void replayFromArchivedTombstone() {
+        // Through the same serialize -> parse path the archive round trip takes.
+        String stored = Retraction.tombstone(original(), BY, NOW).toXML();
+        Message tombstone = ConversationLog.parse(stored).orElseThrow();
+
+        Message replay = Retraction.replayOf(ROOM, tombstone).orElseThrow();
+
+        assertEquals(Message.Type.groupchat, replay.getType());
+        assertEquals(ROOM, replay.getFrom());
+        assertNull(replay.getFrom().getResource(), "Conversations ignores a retraction from a full JID");
+        assertNull(replay.getBody());
+        Element retract = child(replay, "retract", Namespaces.RETRACT);
+        assertEquals(STANZA_ID, retract.attributeValue("id"));
+    }
+
+    @Test
+    @DisplayName("the replay carries the original moderation unchanged, dated when it happened")
+    void replayKeepsModeration() {
+        Message replay = Retraction.replayOf(ROOM, Retraction.tombstone(original(), BY, NOW)).orElseThrow();
+        Element retract = child(replay, "retract", Namespaces.RETRACT);
+        Element moderated = retract.element(QName.get("moderated", Namespaces.MODERATE));
+
+        assertEquals("ops@conference.example.org/alice", moderated.attributeValue("by"));
+        assertEquals("aliceoccupantid",
+            moderated.element(QName.get("occupant-id", Namespaces.OCCUPANT_ID)).attributeValue("id"));
+        assertEquals("spam", retract.element(QName.get("reason", Namespaces.RETRACT)).getText());
+        assertEquals("2026-10-04T20:00:00Z", child(replay, "delay", Namespaces.DELAY).attributeValue("stamp"));
+    }
+
+    @Test
+    @DisplayName("each replay gets its own id, so clients cannot drop one as a duplicate of another")
+    void replayIdsAreFresh() {
+        Message tombstone = Retraction.tombstone(original(), BY, NOW);
+
+        assertFalse(Retraction.replayOf(ROOM, tombstone).orElseThrow().getID()
+            .equals(Retraction.replayOf(ROOM, tombstone).orElseThrow().getID()));
+    }
+
+    @Test
+    @DisplayName("only moderation tombstones replay: not ordinary messages, not self-retractions")
+    void replayOnlyModerations() {
+        assertTrue(Retraction.replayOf(ROOM, original()).isEmpty(), "an ordinary message replayed");
+
+        Message selfRetracted = original();
+        selfRetracted.getElement().addElement("retracted", Namespaces.RETRACT).addAttribute("stamp", "x");
+        assertTrue(Retraction.replayOf(ROOM, selfRetracted).isEmpty(), "a self-retraction replayed");
+
+        assertTrue(Retraction.replayOf(new JID("other@conference.example.org"),
+            Retraction.tombstone(original(), BY, NOW)).isEmpty(), "replayed into the wrong room");
+    }
+
+    @Test
     @DisplayName("a subject change is recognised, so it is never tombstoned")
     void recognisesSubjectChange() {
         Message subject = new Message();

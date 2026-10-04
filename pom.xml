@@ -13,7 +13,7 @@
         every change that gets deployed — the admin console's Plugins page is the only way to tell
         which build a server is actually running, and it reads plugin.xml.
     -->
-    <version>0.1.0</version>
+    <version>0.1.1</version>
     <packaging>jar</packaging>
 
     <name>Openfire Message Moderation Plugin</name>

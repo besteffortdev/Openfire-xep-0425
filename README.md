@@ -39,6 +39,8 @@ database table.
   place, and archive search no longer finds the text.
 - **New joiners don't see it either.** The same tombstone replaces the message in the room's
   join history.
+- **Offline clients catch up.** A phone that had the message and was offline when it was
+  moderated gets the retraction when it next joins the room, and removes its copy.
 - **The whole message goes, not just its body.** The tombstone keeps only the envelope (sender,
   ids, occupant-id, timestamp). Attachments, HTML bodies, reply quotes and any other extension
   are dropped.
@@ -93,11 +95,12 @@ the room. A moderator can already kick the author; this lets them also remove wh
 
 ## Configuration
 
-One system property, listed under **Server → Server Manager → System Properties**:
+Two system properties, listed under **Server → Server Manager → System Properties**:
 
 | Property | Default | Meaning |
 |---|---|---|
 | `plugin.messagemoderation.enabled` | `true` | Takes effect immediately. Switching it off removes `urn:xmpp:message-moderate:1` from service discovery, so clients stop offering the action, and requests are left for core to refuse. |
+| `plugin.messagemoderation.replay.days` | `30` | How far back moderations are re-sent to an occupant when they join, counted from when the moderated message was sent. At most 100 per join. `0` switches the replay off. |
 
 ## Security
 
@@ -155,13 +158,35 @@ The steps, in order:
    `Cache.getLock(roomJID)`, the same lock core's `HistoryStrategy.addMessage` takes. A message
    arriving at the same moment is neither lost nor duplicated, and on a cluster every node sees
    the rewritten value.
-5. **Announce** — broadcast the retraction to the room.
+5. **Announce** — broadcast the retraction to the room, and drop the room's cached replay list
+   so the next joiner gets this moderation too.
 6. **Answer** — an empty `result` to the moderator.
 
 Every step that can fail comes before the announcement. A failure therefore leaves clients still
 showing the message: wrong, but visibly so, and the moderator gets an error and can retry. The
 alternative order could have clients deleting a message the server still serves to the next
 joiner.
+
+### Reaching clients that were offline
+
+The announcement only reaches the occupants in the room at that moment. A phone that already had
+the message and was offline isn't one of them, and catching up doesn't help it. Conversations acts
+on a retraction **only** when it arrives as a live message: it checks the outer stanza for
+`<retract/>`, which a MAM result never is. And when the room has MAM, it joins with
+`maxstanzas='0'`, so it gets no join history either. Confirmed on the test server: an offline
+Conversations client kept the message after a moderation.
+
+So when anyone joins a room, `ModerationReplay` waits 2 s for the join to complete, then sends that
+occupant, live, a retraction for every message moderated in the room in the last
+`replay.days` days (most recent 100). The list is built from the tombstones already in the
+archive. Each one holds the stanza-id, the `<moderated/>` element and the reason exactly as
+announced, so there is no extra table, it survives restarts, and every cluster node agrees. A
+client that never had the message ignores the retraction, so sending it to every joiner is
+harmless.
+
+Mobile clients rejoin on every reconnect, so the list is cached per room for 60 s and dropped as
+soon as the room has a new moderation, and at most 1000 joins wait for a replay at once. A room
+with logging off has no archive, and nothing is replayed in it.
 
 ### Service discovery
 
@@ -215,6 +240,22 @@ survive: anything in the `urn:xmpp:sid:0`, `urn:xmpp:occupant-id:0`, `urn:xmpp:d
 </message>
 ```
 
+**Replay** (room → an occupant who just joined), rebuilt from a tombstone. It is the announcement
+again, addressed to the joiner, with a fresh id and an XEP-0203 `<delay/>` dated when the
+moderation happened:
+
+```xml
+<message type='groupchat' from='ops@conference.example.org' to='bob@example.org/phone' id='…'>
+  <retract xmlns='urn:xmpp:message-retract:1' id='5f1c2e1a-8f0e-4c55-9b1d-2a7e6c1d0f3b'>
+    <moderated xmlns='urn:xmpp:message-moderate:1' by='ops@conference.example.org/alice'>
+      <occupant-id xmlns='urn:xmpp:occupant-id:0' id='…moderator…'/>
+    </moderated>
+    <reason>spam</reason>
+  </retract>
+  <delay xmlns='urn:xmpp:delay' from='ops@conference.example.org' stamp='2026-10-04T20:00:00Z'/>
+</message>
+```
+
 **Errors**
 
 | Condition | When |
@@ -230,13 +271,14 @@ survive: anything in the `urn:xmpp:sid:0`, `urn:xmpp:occupant-id:0`, `urn:xmpp:d
 ## Testing
 
 ```bash
-mvn test                                     # 24 unit tests, no server needed
+mvn test                                     # 28 unit tests, no server needed
 python3 tools/live_check.py [--insecure]     # end to end, against a real server
 ```
 
 The unit tests cover the wire contract and the trust boundary: request parsing (including hostile
 ids and oversized reasons), the exact shape of the announcement and the tombstone, matching only
-room-issued stanza-ids, `LIKE` escaping, and XXE refusal.
+room-issued stanza-ids, `LIKE` escaping, XXE refusal, and rebuilding a replay from a tombstone
+read back from the archive.
 
 `tools/live_check.py` uses only the Python standard library. It logs in as a moderator and as an
 ordinary participant, then checks, against a running Openfire:
@@ -271,10 +313,11 @@ src/main/java/com/igniterealtime/openfire/plugin/moderation/
   ModerationInterceptor.java  picks requests out of the IQ stream and consumes them
   ModerationRequest.java      parses and validates a request (the trust boundary)
   ModerationHandler.java      worker: authorize, find, tombstone, announce, answer
-  Retraction.java             builds the announcement and the tombstone (pure, tested)
+  ModerationReplay.java       re-sends recent moderations to occupants as they join
+  Retraction.java             builds the announcement, tombstone and replay (pure, tested)
   ConversationLog.java        finds and rewrites the row in ofMucConversationLog
   RoomHistory.java            rewrites the join-history cache under core's lock
-  ModerationProperties.java   the one system property
+  ModerationProperties.java   the two system properties
   ModerationException.java    an error condition to answer with
   Namespaces.java · LogSafe.java
 src/main/resources/           plugin.xml, readme.html, i18n bundle
@@ -285,18 +328,28 @@ deploy.sh                     build and deploy to the test server
 
 ## Status
 
-**0.1.0.** Builds against Openfire 5.0.5 and 5.1.0, passes its unit tests, and loads cleanly on
-Openfire 5.1.0. **Not yet verified end to end:** `tools/live_check.py` has not been run against a
-live server, and moderation has not been tried from Conversations itself.
+**0.1.1.** Builds against Openfire 5.0.5 and 5.1.0, passes its unit tests, and runs on
+Openfire 5.1.0.
+
+- **Verified with Conversations on 5.1.0:** a moderator moderated a message in a public room; the
+  archive row and the join history were both tombstoned, and occupants in the room saw the message
+  removed.
+- **Found in that test, fixed in 0.1.1:** a Conversations client that was offline at the time kept
+  the message. The replay on join is meant to close that gap. It is deployed but **not yet
+  confirmed** with an offline device.
+- `tools/live_check.py` has not been run yet.
 
 Known limitations:
 
-- **Offline clients may keep a copy.** A client that downloaded the message and was offline when
-  it was moderated learns of the moderation only if it fetches the retraction from MAM. Core logs
-  the room's announcement with no nickname, and both history reload and Monitoring's MAM query
-  skip such rows, so the retraction is probably invisible to a catching-up client. This is
-  suspected from the code and still to be confirmed live. New joiners and MAM readers are not
-  affected: they get the tombstone.
+- **Offline clients are reached on their next join, within the replay window.** A client that is
+  offline longer than `replay.days` past the message, or that never rejoins the room, keeps its
+  copy. In rooms with logging off there is no replay at all.
+- **The retraction is not in MAM.** Core logs the room's announcement with no nickname, and
+  Monitoring's MAM query skips such rows. That doesn't matter for Conversations, which ignores
+  retractions from MAM anyway, but a client that does read them would rely on the replay instead.
+- **Private non-anonymous rooms.** Conversations ignores retractions in members-only,
+  non-anonymous rooms, so moderation shows no effect there in that client, whatever the server
+  does.
 - **New MUC services.** A MUC service created after the plugin loaded doesn't advertise the
   feature until the plugin is reloaded. Requests to it still work.
 - **Version 1 only.** The deprecated version 0 (`urn:xmpp:message-moderate:0`, wrapped in

@@ -68,6 +68,13 @@ final class ModerationHandler {
             return thread;
         });
 
+    /** Told about every moderation, so occupants who are offline now get it when they rejoin. */
+    private final ModerationReplay replay;
+
+    ModerationHandler(ModerationReplay replay) {
+        this.replay = replay;
+    }
+
     /** Queues {@code request}; it is always answered, whether or not it can be carried out. */
     void submit(ModerationRequest request) {
         Instant received = Instant.now();
@@ -175,6 +182,7 @@ final class ModerationHandler {
         }
 
         room.broadcast(Retraction.announcement(roomJid, stanzaId, by));
+        replay.forget(roomJid);
 
         // Who and where, never what: the moderated text stays out of the log (ACM 1.6).
         Log.info("{} moderated message {} from {} in {} (archive: {}, history: {})",

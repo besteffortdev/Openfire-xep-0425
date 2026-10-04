@@ -29,6 +29,23 @@ final class ModerationProperties {
         .setPlugin(PLUGIN)
         .build();
 
+    /**
+     * How far back, in days, moderations are re-sent to an occupant when they join, so that a
+     * client which was offline at the time removes its copy (see {@link ModerationReplay}). Counted
+     * from when the moderated message was sent. 0 switches the replay off.
+     *
+     * <p>30 covers a phone left off for a few weeks. Longer costs little: the replay is capped at
+     * {@link ModerationReplay#MAX_REPLAYED} messages however long the window.</p>
+     */
+    static final SystemProperty<Integer> REPLAY_DAYS = SystemProperty.Builder.ofType(Integer.class)
+        .setKey("plugin.messagemoderation.replay.days")
+        .setDefaultValue(30)
+        .setMinValue(0)
+        .setMaxValue(3650)
+        .setDynamic(true)
+        .setPlugin(PLUGIN)
+        .build();
+
     private ModerationProperties() {
     }
 }

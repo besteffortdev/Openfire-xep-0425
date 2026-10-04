@@ -24,6 +24,8 @@
         fetch history through MAM get the tombstone rather than the text, and archive search no
         longer finds it.</li>
     <li>It is replaced the same way in the join history new occupants are sent.</li>
+    <li>Occupants who were offline get the retraction when they next join the room, so their
+        client removes its copy too.</li>
 </ul>
 
 <h2>Who can moderate</h2>
@@ -49,6 +51,13 @@
         <td><code>true</code></td>
         <td>Switching it off withdraws <code>urn:xmpp:message-moderate:1</code> from service
             discovery at once, so clients stop offering the action.</td>
+    </tr>
+    <tr>
+        <td><code>plugin.messagemoderation.replay.days</code></td>
+        <td><code>30</code></td>
+        <td>How far back, in days, moderations are re-sent to an occupant when they join. Counted
+            from when the moderated message was sent; at most 100 per join. <code>0</code>
+            switches the replay off.</td>
     </tr>
 </table>
 

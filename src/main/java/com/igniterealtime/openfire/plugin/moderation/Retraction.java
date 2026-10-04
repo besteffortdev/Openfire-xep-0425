@@ -8,6 +8,7 @@ import org.xmpp.packet.Message;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -116,6 +117,44 @@ final class Retraction {
         retract.addAttribute("id", stanzaId);
         appendModeration(retract, by);
         return announcement;
+    }
+
+    /**
+     * Rebuilds the announcement for a moderation from its tombstone, so it can be sent again to an
+     * occupant who was offline when it happened (see {@link ModerationReplay}).
+     *
+     * <p>The tombstone is the durable record of the moderation: it holds the stanza-id, the
+     * {@code <moderated/>} element and the reason, exactly as they were announced. The rebuilt
+     * announcement carries them unchanged, plus an XEP-0203 {@code <delay/>} with the time of the
+     * moderation, which tells a client that reads it that this is a replay rather than a new
+     * event.</p>
+     *
+     * @return the announcement, or empty when {@code tombstone} is not one this plugin wrote — a
+     *         plain XEP-0424 self-retraction has no {@code <moderated/>} and is not replayed
+     */
+    static Optional<Message> replayOf(JID room, Message tombstone) {
+        Element retracted = tombstone.getElement().element(RETRACTED);
+        if (retracted == null || retracted.element(MODERATED) == null) return Optional.empty();
+        String stanzaId = StanzaIDUtil.findFirstUniqueAndStableStanzaID(tombstone, room.toBareJID());
+        if (stanzaId == null) return Optional.empty();
+
+        Message replay = new Message();
+        replay.setType(Message.Type.groupchat);
+        replay.setFrom(room.asBareJID());
+        replay.setID(UUID.randomUUID().toString());
+
+        Element retract = replay.getElement().addElement(RETRACT);
+        retract.addAttribute("id", stanzaId);
+        for (Element child : retracted.elements()) {
+            retract.add(child.createCopy());
+        }
+        String stamp = retracted.attributeValue("stamp");
+        if (stamp != null) {
+            replay.getElement().addElement(QName.get("delay", Namespaces.DELAY))
+                .addAttribute("from", room.toBareJID())
+                .addAttribute("stamp", stamp);
+        }
+        return Optional.of(replay);
     }
 
     /** {@code <moderated by='…'><occupant-id id='…'/></moderated><reason>…</reason>} */

@@ -4,6 +4,7 @@ import org.dom4j.Document;
 import org.dom4j.DocumentException;
 import org.dom4j.io.SAXReader;
 import org.jivesoftware.database.DbConnectionManager;
+import org.jivesoftware.util.StringUtils;
 import org.xml.sax.SAXException;
 import org.xmpp.packet.JID;
 import org.xmpp.packet.Message;
@@ -13,6 +14,10 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -44,6 +49,17 @@ final class ConversationLog {
 
     private static final String TOMBSTONE =
         "UPDATE ofMucConversationLog SET body=NULL, stanza=? WHERE roomID=? AND messageID=?";
+
+    /**
+     * The room's tombstones, newest first. {@code nickname IS NOT NULL} keeps out the rows core
+     * logs for the room's own announcements, and {@code body IS NULL} keeps out every ordinary
+     * message, so the {@code LIKE} only has to look at a handful of rows. {@code logTime} is a
+     * zero-padded millisecond string, bound the way core binds it in its own history query.
+     */
+    private static final String RECENT_TOMBSTONES =
+        "SELECT stanza FROM ofMucConversationLog "
+            + "WHERE roomID=? AND logTime>? AND nickname IS NOT NULL AND body IS NULL "
+            + "AND stanza LIKE ? ESCAPE '!' ORDER BY logTime DESC";
 
     private static final char LIKE_ESCAPE = '!';
 
@@ -92,6 +108,31 @@ final class ConversationLog {
             ps.setLong(3, messageId);
             return ps.executeUpdate() > 0;
         }
+    }
+
+    /**
+     * @param roomId {@code MUCRoom.getID()}
+     * @param since  only messages logged after this; the age of the <em>message</em>, not of the
+     *               moderation, because that is what the table is indexed and ordered by
+     * @param max    at most this many, the most recent
+     * @return the tombstones, oldest first — the order they happened in
+     */
+    static List<Message> recentTombstones(long roomId, Date since, int max) throws SQLException {
+        List<Message> tombstones = new ArrayList<>();
+        try (Connection con = DbConnectionManager.getConnection();
+             PreparedStatement ps = con.prepareStatement(RECENT_TOMBSTONES)) {
+            ps.setMaxRows(max);
+            ps.setLong(1, roomId);
+            ps.setString(2, StringUtils.dateToMillis(since));
+            ps.setString(3, "%" + likeEscape(Namespaces.RETRACT) + "%");
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    parse(DbConnectionManager.getLargeTextField(rs, 1)).ifPresent(tombstones::add);
+                }
+            }
+        }
+        Collections.reverse(tombstones);
+        return tombstones;
     }
 
     /** Makes {@code value} match only itself inside a {@code LIKE ... ESCAPE '!'} pattern. */
