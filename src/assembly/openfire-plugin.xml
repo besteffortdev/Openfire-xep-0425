@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.1.1"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.1.1
+                              http://maven.apache.org/xsd/assembly-2.1.1.xsd">
+    <id>openfire-plugin</id>
+    <formats>
+        <format>jar</format>
+    </formats>
+    <includeBaseDirectory>false</includeBaseDirectory>
+
+    <!-- plugin.xml + readme.html at the archive root. Openfire shows the "readme" link on the
+         Plugins admin page when readme.html sits next to plugin.xml. -->
+    <files>
+        <!--
+            The FILTERED plugin.xml from target/classes, not the one in src/main/resources: only
+            this copy has ${project.version} resolved to a real version number. Ship the source and
+            Openfire's Plugins page displays the literal "${project.version}".
+        -->
+        <file>
+            <source>${project.build.outputDirectory}/plugin.xml</source>
+            <outputDirectory>/</outputDirectory>
+        </file>
+        <file>
+            <source>src/main/resources/readme.html</source>
+            <outputDirectory>/</outputDirectory>
+        </file>
+    </files>
+
+    <!--
+        The compiled classes JAR goes into lib/, which Openfire's PluginClassLoader adds to the
+        plugin's classpath. Exactly one entry on purpose: this plugin bundles no runtime dependency.
+        If that ever changes, do NOT reach for <scope>compile</scope> — Maven's ScopeArtifactFilter
+        treats "compile" as everything on the compile classpath, which sweeps in every provided dep.
+        Add a second dependencySet with explicit groupId:artifactId includes instead.
+    -->
+    <dependencySets>
+        <dependencySet>
+            <outputDirectory>lib</outputDirectory>
+            <useProjectArtifact>true</useProjectArtifact>
+            <useTransitiveDependencies>false</useTransitiveDependencies>
+            <includes>
+                <include>${project.groupId}:${project.artifactId}</include>
+            </includes>
+        </dependencySet>
+    </dependencySets>
+</assembly>

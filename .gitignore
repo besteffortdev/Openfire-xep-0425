@@ -1,0 +1,16 @@
+target/
+.ssh_pass
+*.iml
+.idea/
+.classpath
+.project
+.settings/
+
+# Claude Code local settings (per-machine tool permissions), not project configuration.
+.claude/
+
+# Test-account credentials for the live checks against the test server. Never committed.
+.test-accounts
+
+# Python bytecode from running tools/live_check.py.
+__pycache__/

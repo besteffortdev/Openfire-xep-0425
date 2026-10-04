@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.igniterealtime.openfire.plugin</groupId>
+    <artifactId>messagemoderation</artifactId>
+    <!--
+        THE single source of truth for the plugin version: src/main/resources/plugin.xml pulls it
+        from here by resource filtering (see the <resources> block below). Bump it by +0.0.1 on
+        every change that gets deployed — the admin console's Plugins page is the only way to tell
+        which build a server is actually running, and it reads plugin.xml.
+    -->
+    <version>0.1.0</version>
+    <packaging>jar</packaging>
+
+    <name>Openfire Message Moderation Plugin</name>
+    <description>
+        XEP-0425 Moderated Message Retraction for Openfire MUC rooms: lets a room moderator
+        retract another occupant's message for everyone, live, in join history and in the archive.
+    </description>
+
+    <properties>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!--
+            The floor this plugin is built and tested against. Every core API it touches was
+            compared, signature by signature, between 5.0.5 and 5.1.0 (the version on the test
+            server) and found identical; build with -Dopenfire.version=5.1.0 to re-check after an
+            Openfire upgrade.
+        -->
+        <openfire.version>5.0.5</openfire.version>
+        <junit.version>5.10.2</junit.version>
+    </properties>
+
+    <repositories>
+        <repository>
+            <id>igniterealtime</id>
+            <name>Ignite Realtime Repository</name>
+            <url>https://igniterealtime.org/archiva/repository/maven/</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <!-- Openfire server — provided at runtime by the container -->
+        <dependency>
+            <groupId>org.igniterealtime.openfire</groupId>
+            <artifactId>xmppserver</artifactId>
+            <version>${openfire.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- dom4j and SLF4J are both bundled by Openfire. -->
+        <dependency>
+            <groupId>org.dom4j</groupId>
+            <artifactId>dom4j</artifactId>
+            <version>2.1.4</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>2.0.9</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!--
+            plugin.xml alone is filtered, so its <version> can be ${project.version} and the pom
+            stays the only place a version number is written. Everything else is copied verbatim,
+            so a ${...} sequence in readme.html or the i18n bundle stays content.
+        -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>plugin.xml</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>plugin.xml</exclude>
+                </excludes>
+            </resource>
+        </resources>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>17</release>
+                </configuration>
+            </plugin>
+
+            <!-- 2.12.4 (the version cached by default) predates JUnit 5 and silently runs
+                 zero tests. Pin a JUnit-Platform-aware surefire. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
+
+            <!--
+                Assembly plugin creates the proper Openfire plugin archive:
+                  plugin.xml + readme.html at root
+                  lib/<name>.jar  (classes — loaded by PluginClassLoader)
+
+                There is no web/ directory: the plugin has no admin page of its own. Its single
+                switch is a SystemProperty, which Openfire already lists under Server Manager ->
+                System Properties.
+
+                Output: target/messagemoderation.jar  (deployed to Openfire's plugins dir)
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.7.1</version>
+                <executions>
+                    <execution>
+                        <id>openfire-plugin-assembly</id>
+                        <phase>package</phase>
+                        <goals><goal>single</goal></goals>
+                        <configuration>
+                            <finalName>messagemoderation</finalName>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <descriptors>
+                                <descriptor>src/assembly/openfire-plugin.xml</descriptor>
+                            </descriptors>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

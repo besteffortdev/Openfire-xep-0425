@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Message Moderation Plugin</title>
+</head>
+<body>
+
+<h1>Message Moderation — XEP-0425</h1>
+
+<p>
+    Lets a <strong>moderator</strong> of a group chat room retract another occupant's message for
+    everyone in the room, as defined by
+    <a href="https://xmpp.org/extensions/xep-0425.html">XEP-0425: Moderated Message Retraction</a>.
+    Clients that support it, such as Conversations, offer a <em>Moderate</em> action on messages
+    in rooms where you are a moderator.
+</p>
+
+<h2>What a moderation does</h2>
+<ul>
+    <li>Every occupant's client is told to remove the message (an XEP-0424 retraction from the
+        room, naming the moderator).</li>
+    <li>The message is replaced by a <em>tombstone</em> in the room's archive, so clients that
+        fetch history through MAM get the tombstone rather than the text, and archive search no
+        longer finds it.</li>
+    <li>It is replaced the same way in the join history new occupants are sent.</li>
+</ul>
+
+<h2>Who can moderate</h2>
+<p>
+    Only an occupant whose current <strong>role</strong> in the room is <em>moderator</em>.
+    Room owners and admins are moderators by default. Everyone else gets <code>forbidden</code>.
+    There is nothing else to configure.
+</p>
+
+<h2>Requirements</h2>
+<ul>
+    <li>Openfire 5.0.5 or later. Openfire core supplies the occupant-ids (XEP-0421) and
+        stanza-ids (XEP-0359) this builds on.</li>
+    <li>For archived history to be moderated as well, the room must have message logging on,
+        and the Monitoring plugin serves it over MAM.</li>
+</ul>
+
+<h2>Settings</h2>
+<table border="1" cellpadding="4" cellspacing="0">
+    <tr><th>System property</th><th>Default</th><th>Meaning</th></tr>
+    <tr>
+        <td><code>plugin.messagemoderation.enabled</code></td>
+        <td><code>true</code></td>
+        <td>Switching it off withdraws <code>urn:xmpp:message-moderate:1</code> from service
+            discovery at once, so clients stop offering the action.</td>
+    </tr>
+</table>
+
+</body>
+</html>
