@@ -31,30 +31,59 @@ public class ModerationPlugin implements Plugin {
     private ModerationReplay replay;
     private ModerationHandler handler;
     private ModerationInterceptor interceptor;
-    private final Consumer<Boolean> onEnabledChange = ModerationPlugin::advertise;
+    /**
+     * Called by Openfire whenever an administrator changes the switch, on Openfire's thread: an
+     * exception escaping here would surface in the property change rather than in this plugin.
+     */
+    private final Consumer<Boolean> onEnabledChange = enabled -> {
+        try {
+            advertise(enabled);
+        } catch (Exception e) {
+            Log.warn("Could not update the moderation disco feature to enabled={}", enabled, e);
+        }
+    };
 
+    /**
+     * Registers everything, or nothing. If a step fails, the steps before it are undone before the
+     * failure is passed on: Openfire does not call {@link #destroyPlugin} for a plugin whose
+     * initialization threw, so without this a registered interceptor would go on consuming
+     * moderation requests, with nobody able to unload it short of a restart (CERT ERR03-J).
+     */
     @Override
     public void initializePlugin(PluginManager manager, File pluginDirectory) {
-        replay = new ModerationReplay();
-        handler = new ModerationHandler(replay);
-        interceptor = new ModerationInterceptor(handler);
-        InterceptorManager.getInstance().addInterceptor(interceptor);
-        MUCEventDispatcher.addListener(replay);
-        ModerationProperties.ENABLED.addListener(onEnabledChange);
-        advertise(ModerationProperties.ENABLED.getValue());
+        try {
+            replay = new ModerationReplay();
+            handler = new ModerationHandler(replay);
+            interceptor = new ModerationInterceptor(handler);
+            InterceptorManager.getInstance().addInterceptor(interceptor);
+            MUCEventDispatcher.addListener(replay);
+            ModerationProperties.ENABLED.addListener(onEnabledChange);
+            advertise(ModerationProperties.ENABLED.getValue());
+        } catch (Throwable failure) {
+            // Rethrown unchanged, so nothing is swallowed. Error is included on purpose: a
+            // NoClassDefFoundError from an incompatible Openfire is the likeliest way to get here.
+            try {
+                destroyPlugin();
+            } catch (Throwable rollback) {
+                failure.addSuppressed(rollback);
+            }
+            throw failure;
+        }
         Log.info("Message Moderation started (XEP-0425, {}); enabled: {}",
             Namespaces.MODERATE, ModerationProperties.ENABLED.getValue());
     }
 
+    /**
+     * Also the rollback for a failed {@link #initializePlugin}, so every step tolerates the part
+     * of the plugin it undoes never having been set up.
+     */
     @Override
     public void destroyPlugin() {
-        // Each step guarded on its own: one failing must not leave the next undone, least of all
-        // the interceptor removal, which would keep consuming requests with no handler behind it.
-        try {
-            ModerationProperties.ENABLED.removeListener(onEnabledChange);
-        } catch (Exception e) {
-            Log.warn("Could not remove the property listener", e);
-        }
+        // Each step guarded on its own: one failing must not leave the next undone. The interceptor
+        // goes first because it is the one that does harm if left behind — it would keep consuming
+        // requests with no handler behind it. The steps that touch ModerationProperties come last
+        // and also tolerate a LinkageError: if that class never initialized, which is one way a
+        // start can fail, there is nothing of it to undo, and the error must not end the cleanup.
         if (interceptor != null) {
             try {
                 InterceptorManager.getInstance().removeInterceptor(interceptor);
@@ -62,11 +91,6 @@ public class ModerationPlugin implements Plugin {
                 Log.warn("Could not remove the moderation interceptor", e);
             }
             interceptor = null;
-        }
-        try {
-            advertise(false);
-        } catch (Exception e) {
-            Log.warn("Could not withdraw the moderation disco feature", e);
         }
         if (handler != null) {
             handler.shutdown();
@@ -80,6 +104,16 @@ public class ModerationPlugin implements Plugin {
             }
             replay.shutdown();
             replay = null;
+        }
+        try {
+            ModerationProperties.ENABLED.removeListener(onEnabledChange);
+        } catch (Exception | LinkageError e) {
+            Log.warn("Could not remove the property listener", e);
+        }
+        try {
+            advertise(false);
+        } catch (Exception e) {
+            Log.warn("Could not withdraw the moderation disco feature", e);
         }
     }
 

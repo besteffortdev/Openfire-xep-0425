@@ -94,11 +94,19 @@ record ModerationRequest(JID room, JID requester, String iqId, String stanzaId, 
             reasonOf(moderate)));
     }
 
+    /**
+     * The cap is applied without splitting a surrogate pair: a cut through an emoji would leave a
+     * lone surrogate, which is not a character XML can carry, and the reason is both broadcast to
+     * every occupant and stored in the tombstone.
+     */
     private static String reasonOf(Element moderate) {
         Element reason = moderate.element(REASON);
         if (reason == null) return null;
         String text = reason.getTextTrim();
         if (text.isEmpty()) return null;
-        return text.length() > MAX_REASON_CHARS ? text.substring(0, MAX_REASON_CHARS) : text;
+        if (text.length() <= MAX_REASON_CHARS) return text;
+        int end = Character.isHighSurrogate(text.charAt(MAX_REASON_CHARS - 1))
+            ? MAX_REASON_CHARS - 1 : MAX_REASON_CHARS;
+        return text.substring(0, end);
     }
 }

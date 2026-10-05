@@ -14,7 +14,8 @@ final class ModerationException extends Exception {
 
     private static final long serialVersionUID = 1L;
 
-    private final transient PacketError.Condition condition;
+    /** An enum, so serializable as it is; {@code transient} would lose it on deserialization. */
+    private final PacketError.Condition condition;
 
     ModerationException(PacketError.Condition condition, String logMessage) {
         super(logMessage);

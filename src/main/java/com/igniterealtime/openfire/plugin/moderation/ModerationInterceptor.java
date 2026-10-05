@@ -59,6 +59,12 @@ final class ModerationInterceptor implements PacketInterceptor {
         }
     }
 
+    /**
+     * The request is handed on <em>before</em> it is consumed, never after. Neither depends on the
+     * IQ once the request is parsed, so the order costs nothing — and it is what makes the
+     * fallback in {@link #interceptPacket} true: if handing on throws, the IQ is still intact and
+     * core answers it, rather than the moderator being left with no answer at all.
+     */
     private void handle(IQ iq) {
         JID to = iq.getTo();
         JID from = iq.getFrom();
@@ -68,13 +74,13 @@ final class ModerationInterceptor implements PacketInterceptor {
             request = ModerationRequest.parse(iq);
         } catch (ModerationException e) {
             Log.debug("Malformed moderation request from {}: {}", from, e.getMessage());
-            consume(iq);
             ModerationHandler.sendError(to.asBareJID(), from, id, e.condition());
+            consume(iq);
             return;
         }
         if (request.isEmpty()) return;     // e.g. addressed to an occupant, not the room
-        consume(iq);
         handler.submit(request.get());
+        consume(iq);
     }
 
     private static boolean isLocalMucService(JID to) {

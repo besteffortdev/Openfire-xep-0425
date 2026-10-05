@@ -10,6 +10,7 @@ import org.xmpp.packet.PacketError;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -64,6 +65,21 @@ class ModerationRequestTest {
 
         assertEquals(ModerationRequest.MAX_REASON_CHARS,
             ModerationRequest.parse(iq).orElseThrow().reason().length());
+    }
+
+    @Test
+    @DisplayName("capping a reason never cuts an emoji in half")
+    void capsReasonOnACharacterBoundary() throws ModerationException {
+        // 999 chars, then an emoji whose two halves straddle the cap.
+        IQ iq = request(ROOM, STANZA_ID);
+        iq.getChildElement().addElement("reason")
+            .setText("x".repeat(ModerationRequest.MAX_REASON_CHARS - 1) + "😀 and more");
+
+        String reason = ModerationRequest.parse(iq).orElseThrow().reason();
+
+        assertEquals(ModerationRequest.MAX_REASON_CHARS - 1, reason.length());
+        assertFalse(Character.isHighSurrogate(reason.charAt(reason.length() - 1)),
+            "the cap left a lone surrogate, which no XML stanza can carry");
     }
 
     @Test

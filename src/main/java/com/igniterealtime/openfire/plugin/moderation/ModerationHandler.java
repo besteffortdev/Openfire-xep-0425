@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -60,6 +61,13 @@ final class ModerationHandler {
      */
     private static final int QUEUE_CAPACITY = 64;
 
+    /**
+     * Longest {@link #shutdown} waits for a moderation in progress. A plugin's classes must not
+     * keep running after Openfire has unloaded it, but an unload must not hang on a stuck database
+     * either.
+     */
+    static final Duration SHUTDOWN_WAIT = Duration.ofSeconds(5);
+
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(QUEUE_CAPACITY),
         task -> {
@@ -89,10 +97,18 @@ final class ModerationHandler {
     }
 
     void shutdown() {
-        worker.shutdownNow();
+        stop(worker, "Moderation worker");
+    }
+
+    /**
+     * Stops {@code executor} and waits up to {@link #SHUTDOWN_WAIT} for its task in progress.
+     * Shared with {@link ModerationReplay}, so the plugin's two threads end the same way.
+     */
+    static void stop(ExecutorService executor, String name) {
+        executor.shutdownNow();
         try {
-            if (!worker.awaitTermination(5, TimeUnit.SECONDS)) {
-                Log.warn("Moderation worker did not stop within 5 s");
+            if (!executor.awaitTermination(SHUTDOWN_WAIT.toMillis(), TimeUnit.MILLISECONDS)) {
+                Log.warn("{} did not stop within {} s", name, SHUTDOWN_WAIT.toSeconds());
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

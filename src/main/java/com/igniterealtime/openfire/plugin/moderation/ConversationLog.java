@@ -78,6 +78,7 @@ final class ConversationLog {
      * @param room     the room's JID, which must be the {@code by} of the matching stanza-id
      * @param stanzaId the id to look for; already validated by {@link ModerationRequest}
      * @return the archived message the room stamped with that id, if it was logged
+     * @throws SQLException if the database cannot be read
      */
     static Optional<Entry> find(long roomId, JID room, String stanzaId) throws SQLException {
         try (Connection con = DbConnectionManager.getConnection();
@@ -99,7 +100,12 @@ final class ConversationLog {
         return Optional.empty();
     }
 
-    /** Replaces the row's content with {@code tombstone}. @return whether a row was updated. */
+    /**
+     * Replaces the row's content with {@code tombstone}.
+     *
+     * @return whether a row was updated
+     * @throws SQLException if the database cannot be written
+     */
     static boolean replace(long roomId, long messageId, Message tombstone) throws SQLException {
         try (Connection con = DbConnectionManager.getConnection();
              PreparedStatement ps = con.prepareStatement(TOMBSTONE)) {
@@ -116,6 +122,7 @@ final class ConversationLog {
      *               moderation, because that is what the table is indexed and ordered by
      * @param max    at most this many, the most recent
      * @return the tombstones, oldest first — the order they happened in
+     * @throws SQLException if the database cannot be read
      */
     static List<Message> recentTombstones(long roomId, Date since, int max) throws SQLException {
         List<Message> tombstones = new ArrayList<>();

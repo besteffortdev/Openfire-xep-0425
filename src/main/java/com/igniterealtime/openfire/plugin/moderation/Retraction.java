@@ -27,6 +27,14 @@ final class Retraction {
     private static final QName RETRACTED = QName.get("retracted", Namespaces.RETRACT);
     private static final QName MODERATED = QName.get("moderated", Namespaces.MODERATE);
     private static final QName OCCUPANT_ID = QName.get("occupant-id", Namespaces.OCCUPANT_ID);
+    private static final QName DELAY = QName.get("delay", Namespaces.DELAY);
+
+    /**
+     * The reason inside {@code <retract/>}. Not the same element as the one in a moderation
+     * <em>request</em> ({@code ModerationRequest.REASON}), which is in the moderation namespace;
+     * the two share a local name only.
+     */
+    private static final QName RETRACT_REASON = QName.get("reason", Namespaces.RETRACT);
 
     /**
      * What survives into a tombstone. An allowlist rather than a denylist, because the point of a
@@ -108,14 +116,8 @@ final class Retraction {
      * @param by       who moderated it
      */
     static Message announcement(JID room, String stanzaId, ModeratedBy by) {
-        Message announcement = new Message();
-        announcement.setType(Message.Type.groupchat);
-        announcement.setFrom(room.asBareJID());
-        announcement.setID(UUID.randomUUID().toString());
-
-        Element retract = announcement.getElement().addElement(RETRACT);
-        retract.addAttribute("id", stanzaId);
-        appendModeration(retract, by);
+        Message announcement = retractionFrom(room);
+        appendModeration(addRetract(announcement, stanzaId), by);
         return announcement;
     }
 
@@ -138,23 +140,38 @@ final class Retraction {
         String stanzaId = StanzaIDUtil.findFirstUniqueAndStableStanzaID(tombstone, room.toBareJID());
         if (stanzaId == null) return Optional.empty();
 
-        Message replay = new Message();
-        replay.setType(Message.Type.groupchat);
-        replay.setFrom(room.asBareJID());
-        replay.setID(UUID.randomUUID().toString());
-
-        Element retract = replay.getElement().addElement(RETRACT);
-        retract.addAttribute("id", stanzaId);
+        Message replay = retractionFrom(room);
+        Element retract = addRetract(replay, stanzaId);
         for (Element child : retracted.elements()) {
             retract.add(child.createCopy());
         }
         String stamp = retracted.attributeValue("stamp");
         if (stamp != null) {
-            replay.getElement().addElement(QName.get("delay", Namespaces.DELAY))
+            replay.getElement().addElement(DELAY)
                 .addAttribute("from", room.toBareJID())
                 .addAttribute("stamp", stamp);
         }
         return Optional.of(replay);
+    }
+
+    /**
+     * The envelope shared by the live announcement and its replay, kept in one place because it is
+     * exactly what clients check before acting: a {@code groupchat} message from the room's bare
+     * JID. A fresh id each time, so a client cannot drop one as a duplicate of another.
+     */
+    private static Message retractionFrom(JID room) {
+        Message message = new Message();
+        message.setType(Message.Type.groupchat);
+        message.setFrom(room.asBareJID());
+        message.setID(UUID.randomUUID().toString());
+        return message;
+    }
+
+    /** Adds {@code <retract id='…'/>} naming the moderated message, and returns it. */
+    private static Element addRetract(Message message, String stanzaId) {
+        Element retract = message.getElement().addElement(RETRACT);
+        retract.addAttribute("id", stanzaId);
+        return retract;
     }
 
     /** {@code <moderated by='…'><occupant-id id='…'/></moderated><reason>…</reason>} */
@@ -165,7 +182,7 @@ final class Retraction {
             moderated.addElement(OCCUPANT_ID).addAttribute("id", by.occupantId());
         }
         if (by.reason() != null) {
-            parent.addElement(QName.get("reason", Namespaces.RETRACT)).setText(by.reason());
+            parent.addElement(RETRACT_REASON).setText(by.reason());
         }
     }
 }

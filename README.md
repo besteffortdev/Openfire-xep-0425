@@ -22,7 +22,7 @@ database table.
 - [Security](#security)
 - [How it works](#how-it-works)
 - [The protocol, as implemented](#the-protocol-as-implemented)
-- [Testing](#testing)
+- [Testing](#testing) · [Code standards](#code-standards)
 - [Project layout](#project-layout)
 - [Status](#status)
 - [License](#license)
@@ -271,14 +271,14 @@ moderation happened:
 ## Testing
 
 ```bash
-mvn test                                     # 28 unit tests, no server needed
+mvn test                                     # 38 unit tests, no server needed
 python3 tools/live_check.py [--insecure]     # end to end, against a real server
 ```
 
 The unit tests cover the wire contract and the trust boundary: request parsing (including hostile
 ids and oversized reasons), the exact shape of the announcement and the tombstone, matching only
-room-issued stanza-ids, `LIKE` escaping, XXE refusal, and rebuilding a replay from a tombstone
-read back from the archive.
+room-issued stanza-ids, `LIKE` escaping, XXE refusal, log forging, rebuilding a replay from a
+tombstone read back from the archive, and a start that fails part-way leaving nothing registered.
 
 `tools/live_check.py` uses only the Python standard library. It logs in as a moderator and as an
 ordinary participant, then checks, against a running Openfire:
@@ -305,6 +305,13 @@ author_password=...
 If the room doesn't exist, the script creates it with logging on and makes the moderator its
 owner.
 
+## Code standards
+
+The code is held to the same standard as its sister plugins, Openfire-federation and
+Openfire-SAMessage, re-derived for this codebase in
+[docs/java-code-standards.md](docs/java-code-standards.md). That file gives each rule's status
+(PASS, GAP or JUSTIFIED) and records the deliberate deviations, so they are not "fixed" later.
+
 ## Project layout
 
 ```
@@ -322,14 +329,20 @@ src/main/java/com/igniterealtime/openfire/plugin/moderation/
   Namespaces.java · LogSafe.java
 src/main/resources/           plugin.xml, readme.html, i18n bundle
 src/test/java/…               unit tests
+docs/java-code-standards.md   the coding standard, and where this code stands against it
 tools/live_check.py           end-to-end check against a live server
 deploy.sh                     build and deploy to the test server
 ```
 
 ## Status
 
-**0.1.1.** Builds against Openfire 5.0.5 and 5.1.0, passes its unit tests, and runs on
-Openfire 5.1.0.
+**0.1.2.** Builds against Openfire 5.0.5 and 5.1.0 and passes its unit tests. 0.1.1 runs on
+Openfire 5.1.0; 0.1.2 is **not yet deployed**.
+
+- **0.1.2 is a standards pass** ([docs/java-code-standards.md](docs/java-code-standards.md)). It
+  makes no protocol change and fixes two defects. A start that failed part-way left the
+  interceptor registered until a restart. A malformed request whose answer failed to send was left
+  with no answer at all.
 
 - **Verified with Conversations on 5.1.0:** a moderator moderated a message in a public room; the
   archive row and the join history were both tombstoned, and occupants in the room saw the message

@@ -85,8 +85,9 @@ final class ModerationReplay implements MUCEventListener {
         cache.remove(room.asBareJID());
     }
 
+    /** Pending replays are dropped; one already sending is given {@link ModerationHandler#SHUTDOWN_WAIT}. */
     void shutdown() {
-        scheduler.shutdownNow();
+        ModerationHandler.stop(scheduler, "Moderation replay");
         cache.clear();
     }
 
@@ -140,7 +141,7 @@ final class ModerationReplay implements MUCEventListener {
         return immutable;
     }
 
-    // ── events this plugin has no use for ───────────────────────────────────────────────────────
+    // ── events this plugin has no use for ────────────────────────────────────────────────────────────
 
     @Override
     public void roomCreated(long roomID, JID roomJID) {
