@@ -54,6 +54,7 @@ public class ModerationPlugin implements Plugin {
         try {
             replay = new ModerationReplay();
             handler = new ModerationHandler(replay);
+            handler.backfillMonitoring();
             interceptor = new ModerationInterceptor(handler);
             InterceptorManager.getInstance().addInterceptor(interceptor);
             MUCEventDispatcher.addListener(replay);

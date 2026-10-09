@@ -102,6 +102,7 @@ prompt to justify the trade-off.
 |---|---|
 | `ModerationHandler.run` | **Must stay broad.** It is the worker's barrier: TPS03-J, plus the one-answer guarantee. |
 | `ModerationReplay.replay` | **Must stay broad.** It is the scheduled task's barrier (TPS03-J). |
+| `ModerationHandler.backfillMonitoring`, the task | **Must stay broad.** It is the start-up backfill's barrier on the worker (TPS03-J). It logs, and the backfill is retried at the next start. Added in 0.1.3. |
 | `ModerationInterceptor.interceptPacket` | **Must stay broad.** An exception escaping it reaches core's interceptor loop, which runs for every packet on the server. |
 | `ModerationPlugin.destroyPlugin`, one per step (4) | **Must stay broad.** These are isolation barriers: one failed step must not abandon the rest. |
 | `ModerationPlugin.onEnabledChange` | **Must stay broad.** It runs on Openfire's thread when an administrator changes the switch. |
@@ -199,7 +200,7 @@ reproduces the bug rather than restating the fix.
 | **ACM 1.3: Be honest** | The server must not claim what it did not do. | **PASS.** The moderator gets a result only after the archive and history were rewritten. The log line states which of the two actually happened. |
 | **ACM 1.6: Respect privacy** | Do not log message content. | **PASS.** The log carries who, where and which id, never the moderated text. A comment on the log line says so. A tombstone keeps an allowlist of envelope fields, so an attachment URL, an HTML body or a client extension added next year cannot survive moderation by default. |
 | **ACM 1.7: Honor confidentiality** | Internal infrastructure must not ship. | **PASS** for the plugin jar: `readme.html` and `plugin.xml` contain no hosts. **Watch:** `deploy.sh` and `tools/live_check.py` name the test server's address and hostname, and they are in the public GitHub mirror's history. They are not secrets, but the sister projects publish to GitHub through a sanitized mirror for exactly this reason. |
-| **ACM 2.5 / SE 3.10: Adequate testing** | Tests in proportion to risk. | **PASS.** 38 tests, run offline with `mvn -o test`, cover the wire contract, the trust boundary, log forging, and the plugin lifecycle. What is *not* covered by unit tests is anything needing a live room: authorization against a real role, the archive wait, and the join replay. `tools/live_check.py` exists for those. |
+| **ACM 2.5 / SE 3.10: Adequate testing** | Tests in proportion to risk. | **PASS.** 41 tests, run offline with `mvn -o test`, cover the wire contract, the trust boundary, log forging, and the plugin lifecycle. What is *not* covered by unit tests is anything needing a live room: authorization against a real role, the archive wait, and the join replay. `tools/live_check.py` exists for those. |
 | **SE 3.11: Document known limitations** | Say what does not work. | **PASS.** See README § Status, which includes the one internal-API dependency (`RoomHistory`) and how it degrades. |
 | **SE 6.07 / 8.02: Be accurate** | Say what was verified and what was not. | **PASS.** The README separates "verified with Conversations" from "deployed, not yet confirmed". |
 

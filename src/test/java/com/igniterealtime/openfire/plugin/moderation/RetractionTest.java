@@ -203,6 +203,48 @@ class RetractionTest {
     }
 
     @Test
+    @DisplayName("a second copy tombstoned from the archived record matches the first exactly")
+    void secondCopyGetsSameTombstone() {
+        Message first = Retraction.tombstone(original(), BY, NOW);
+        // Read back as MessageArchive.backfill reads it, out of core's archive.
+        Element record = Retraction.moderationOf(ConversationLog.parse(first.toXML()).orElseThrow()).orElseThrow();
+
+        // Both through the database round trip, which writes an empty element as <x></x>, not <x/>.
+        assertEquals(stored(first), stored(Retraction.tombstone(original(), record)));
+    }
+
+    private static String stored(Message m) {
+        return ConversationLog.parse(m.toXML()).orElseThrow().toXML();
+    }
+
+    @Test
+    @DisplayName("Monitoring's copy, tombstoned, keeps its own envelope and the room's stanza-id, and loses the text")
+    void monitoringCopyTombstone() {
+        // Monitoring stores the message with its own to/from; the tombstone must keep what it stored.
+        Message copy = original();
+        copy.setTo(new JID("bob@example.org/phone"));
+        Element record = Retraction.moderationOf(Retraction.tombstone(original(), BY, NOW)).orElseThrow();
+
+        Message tombstone = Retraction.tombstone(copy, record);
+
+        assertNull(tombstone.getBody());
+        assertFalse(tombstone.toXML().contains("spam.example"), tombstone.toXML());
+        assertEquals(copy.getTo(), tombstone.getTo());
+        assertTrue(Retraction.carries(tombstone, ROOM, STANZA_ID), "MAM could no longer page to it by stanza-id");
+        assertTrue(Retraction.moderationOf(tombstone).isPresent(), "a rerun would tombstone it again");
+    }
+
+    @Test
+    @DisplayName("only this plugin's tombstones carry a moderation record")
+    void moderationOfOnlyModerations() {
+        assertTrue(Retraction.moderationOf(original()).isEmpty());
+
+        Message selfRetracted = original();
+        selfRetracted.getElement().addElement("retracted", Namespaces.RETRACT).addAttribute("stamp", "x");
+        assertTrue(Retraction.moderationOf(selfRetracted).isEmpty());
+    }
+
+    @Test
     @DisplayName("a subject change is recognised, so it is never tombstoned")
     void recognisesSubjectChange() {
         Message subject = new Message();

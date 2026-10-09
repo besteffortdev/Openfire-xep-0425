@@ -1,5 +1,6 @@
 package com.igniterealtime.openfire.plugin.moderation;
 
+import org.dom4j.DocumentHelper;
 import org.dom4j.Element;
 import org.dom4j.QName;
 import org.jivesoftware.openfire.stanzaid.StanzaIDUtil;
@@ -85,6 +86,23 @@ final class Retraction {
      * @return a new message with the original's envelope and none of its content
      */
     static Message tombstone(Message original, ModeratedBy by, Instant now) {
+        Element retracted = DocumentHelper.createElement(RETRACTED);
+        retracted.addAttribute("stamp", now.truncatedTo(ChronoUnit.SECONDS).toString());
+        appendModeration(retracted, by);
+        return tombstone(original, retracted);
+    }
+
+    /**
+     * A tombstone for another stored copy of a message already moderated, carrying the same record
+     * of that moderation — the Monitoring plugin keeps its own copy of every room message (see
+     * {@link MessageArchive}).
+     *
+     * @param original  the message as stored; not modified
+     * @param retracted the {@code <retracted/>} element of the moderation, from {@link #moderationOf};
+     *                  copied, not moved
+     * @return a new message with the original's envelope and none of its content
+     */
+    static Message tombstone(Message original, Element retracted) {
         Message tombstone = new Message();
         tombstone.setType(Message.Type.groupchat);
         tombstone.setFrom(original.getFrom());
@@ -97,10 +115,18 @@ final class Retraction {
             }
         }
 
-        Element retracted = tombstone.getElement().addElement(RETRACTED);
-        retracted.addAttribute("stamp", now.truncatedTo(ChronoUnit.SECONDS).toString());
-        appendModeration(retracted, by);
+        tombstone.getElement().add(retracted.createCopy());
         return tombstone;
+    }
+
+    /**
+     * @return the {@code <retracted/>} element of a tombstone this plugin wrote, or empty for any
+     *         other message — a plain XEP-0424 self-retraction has no {@code <moderated/>}
+     */
+    static Optional<Element> moderationOf(Message tombstone) {
+        Element retracted = tombstone.getElement().element(RETRACTED);
+        if (retracted == null || retracted.element(MODERATED) == null) return Optional.empty();
+        return Optional.of(retracted);
     }
 
     /**
@@ -135,8 +161,8 @@ final class Retraction {
      *         plain XEP-0424 self-retraction has no {@code <moderated/>} and is not replayed
      */
     static Optional<Message> replayOf(JID room, Message tombstone) {
-        Element retracted = tombstone.getElement().element(RETRACTED);
-        if (retracted == null || retracted.element(MODERATED) == null) return Optional.empty();
+        Element retracted = moderationOf(tombstone).orElse(null);
+        if (retracted == null) return Optional.empty();
         String stanzaId = StanzaIDUtil.findFirstUniqueAndStableStanzaID(tombstone, room.toBareJID());
         if (stanzaId == null) return Optional.empty();
 

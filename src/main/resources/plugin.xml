@@ -15,7 +15,7 @@
     <author>besteffortdev</author>
     <!-- Filled in from the pom at build time. Bump it in pom.xml, not here. -->
     <version>${project.version}</version>
-    <date>10/04/2026</date>
+    <date>10/09/2026</date>
     <!--
         5.0.5 is the first release this was verified against, and the first with the core pieces
         it builds on: XEP-0421 occupant-ids on every MUC stanza, XEP-0359 stanza-ids stamped by

@@ -40,7 +40,9 @@
     <li>Openfire 5.0.5 or later. Openfire core supplies the occupant-ids (XEP-0421) and
         stanza-ids (XEP-0359) this builds on.</li>
     <li>For archived history to be moderated as well, the room must have message logging on,
-        and the Monitoring plugin serves it over MAM.</li>
+        and the Monitoring plugin serves it over MAM. Both copies of the message are tombstoned:
+        core's conversation log and Monitoring's own archive, which is what MAM is served from
+        by default.</li>
 </ul>
 
 <h2>Settings</h2>

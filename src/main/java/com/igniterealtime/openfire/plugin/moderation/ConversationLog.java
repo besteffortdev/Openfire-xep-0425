@@ -21,15 +21,19 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * The room's archive: core's {@code ofMucConversationLog} table, which both join history (after a
- * restart) and the Monitoring plugin's MUC MAM are served from.
+ * The room's archive in core: the {@code ofMucConversationLog} table, which join history is
+ * reloaded from after a restart, and which the Monitoring plugin serves MUC MAM from <em>only</em>
+ * when {@code conversation.database.use-openfire-tables} is true. By default Monitoring serves MAM
+ * from its own copy instead, which {@link MessageArchive} rewrites.
  *
  * <p>There is no table of this plugin's own and nothing to install. A moderation rewrites the
  * moderated row in place — {@code body} to NULL, {@code stanza} to the tombstone — and leaves
  * everything else as it was, so the row keeps its {@code messageID} (MAM paging), {@code logTime}
  * and {@code nickname}. Monitoring builds the MAM result from {@code stanza} whenever it is set and
  * does not filter on {@code body}, so a client paging through the archive gets the tombstone in the
- * original's place; and full-text search, which matches on {@code body}, no longer finds the text.</p>
+ * original's place; and full-text search, which matches on {@code body}, no longer finds the text.
+ * The tombstones are also this plugin's durable record of every moderation, which the join replay
+ * and {@link MessageArchive#backfill} read back.</p>
  *
  * <p>The SQL is plain enough to run unchanged on every database Openfire supports. {@code ESCAPE}
  * is standard SQL. The stanza is written with plain {@code setString} and read back with
@@ -60,6 +64,14 @@ final class ConversationLog {
         "SELECT stanza FROM ofMucConversationLog "
             + "WHERE roomID=? AND logTime>? AND nickname IS NOT NULL AND body IS NULL "
             + "AND stanza LIKE ? ESCAPE '!' ORDER BY logTime DESC";
+
+    /**
+     * Every room's tombstones, for {@link MessageArchive#backfill}. Matched on the moderation
+     * namespace rather than the retraction one, so only this plugin's own tombstones are read.
+     */
+    private static final String ALL_MODERATIONS =
+        "SELECT stanza FROM ofMucConversationLog "
+            + "WHERE nickname IS NOT NULL AND body IS NULL AND stanza LIKE ? ESCAPE '!'";
 
     private static final char LIKE_ESCAPE = '!';
 
@@ -139,6 +151,25 @@ final class ConversationLog {
             }
         }
         Collections.reverse(tombstones);
+        return tombstones;
+    }
+
+    /**
+     * @return the tombstone of every moderation this plugin has made, in every room, in no
+     *         particular order
+     * @throws SQLException if the database cannot be read
+     */
+    static List<Message> allModerations() throws SQLException {
+        List<Message> tombstones = new ArrayList<>();
+        try (Connection con = DbConnectionManager.getConnection();
+             PreparedStatement ps = con.prepareStatement(ALL_MODERATIONS)) {
+            ps.setString(1, "%" + likeEscape(Namespaces.MODERATE) + "%");
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    parse(DbConnectionManager.getLargeTextField(rs, 1)).ifPresent(tombstones::add);
+                }
+            }
+        }
         return tombstones;
     }
 

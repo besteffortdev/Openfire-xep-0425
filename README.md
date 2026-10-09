@@ -34,9 +34,10 @@ database table.
 - **Retraction for everyone in the room.** Every occupant receives an XEP-0424 retraction from
   the room's bare JID that names the moderator. Conversations needs exactly that shape before it
   deletes the message.
-- **The archive is cleaned, not just the screen.** The message's row in Openfire's conversation
-  log becomes a *tombstone*. Clients that page through MAM get a "retracted" placeholder in its
-  place, and archive search no longer finds the text.
+- **The archive is cleaned, not just the screen.** The message is stored twice, once in Openfire's
+  conversation log and once in the Monitoring plugin's own archive, and both copies become a
+  *tombstone*. Clients that page through MAM get a "retracted" placeholder in its place, and
+  archive search no longer finds the text.
 - **New joiners don't see it either.** The same tombstone replaces the message in the room's
   join history.
 - **Offline clients catch up.** A phone that had the message and was offline when it was
@@ -57,7 +58,7 @@ database table.
 | Openfire | **5.0.5 or later**. Built against 5.0.5; every core API used is identical in 5.1.0. |
 | Java | 17 to build (Openfire 5 runs on 17+). |
 | Room logging | Needed for the archive to be moderated. Rooms without it still get the live retraction and the history rewrite. |
-| Monitoring plugin | Needed for MAM, i.e. for clients to fetch the archive at all. Tested with 2.8.0. |
+| Monitoring plugin | Needed for MAM, i.e. for clients to fetch the archive at all. Tested with 2.8.0. Optional for the plugin itself: without it there is only core's copy to rewrite. |
 
 ## Build
 
@@ -140,20 +141,28 @@ what it routes is the consumed form. The moderator's single answer comes from th
 
 Requests are queued to one worker thread rather than handled on the connection's reader thread,
 because the message may not be in the database yet. Core writes room messages to
-`ofMucConversationLog` in batches through an `Archiver`. A moderator quick to react can name a
-message that's still queued, so the worker waits (up to 10 s) for the archiver to catch up to
-the moment the request arrived. A single worker also means two moderations in the same room
+`ofMucConversationLog` in batches through an `Archiver`, and Monitoring writes its own copy to
+`ofMessageArchive` through a queue of its own. A moderator quick to react can name a message
+that's still queued, so the worker waits (up to 10 s in all) for both to catch up to the moment
+the request arrived. For Monitoring it asks `ConversationManager.availabilityETA`, the same call
+Monitoring's own MAM handler waits on, by reflection, since Monitoring is a separate plugin. A single worker also means two moderations in the same room
 never interleave.
 
 The steps, in order:
 
 1. **Authorize** — the requester's current role in the room must be moderator.
-2. **Find** — in the join history, and (if the room logs) in `ofMucConversationLog`, by the
-   room-issued stanza-id. Not found anywhere → `item-not-found`. A subject change → `not-allowed`.
-3. **Archive** — rewrite the row: `body = NULL`, `stanza = tombstone`. The row keeps its
-   `messageID`, `logTime` and `nickname`, so MAM paging and ordering are unchanged. Monitoring
-   builds MAM results from `stanza` and doesn't filter on `body`, so MAM serves the tombstone in
-   the original's place.
+2. **Find** — in the join history, (if the room logs) in `ofMucConversationLog`, and (if
+   Monitoring's schema is installed) in `ofMessageArchive`, by the room-issued stanza-id. Not
+   found anywhere → `item-not-found`. A subject change → `not-allowed`.
+3. **Archive** — rewrite the row in both tables: `body = NULL`, `stanza = tombstone`. Each row
+   keeps its `messageID` and timestamps, so MAM paging and ordering are unchanged. Monitoring
+   builds MAM results from `stanza` whenever it is set and keeps rows where
+   `stanza IS NOT NULL OR body IS NOT NULL`, so MAM serves the tombstone in the original's place.
+
+   Both tables matter. Monitoring serves MUC MAM from **its own** `ofMessageArchive` unless
+   `conversation.database.use-openfire-tables` is `true`, and that defaults to `false`. Before
+   0.1.3 only `ofMucConversationLog` was rewritten, so a client that cleared its history and
+   fetched the room again got the moderated text back from MAM.
 4. **History** — replace the entry in core's `MUC History` cache, read-modify-write under
    `Cache.getLock(roomJID)`, the same lock core's `HistoryStrategy.addMessage` takes. A message
    arriving at the same moment is neither lost nor duplicated, and on a cluster every node sees
@@ -187,6 +196,14 @@ harmless.
 Mobile clients rejoin on every reconnect, so the list is cached per room for 60 s and dropped as
 soon as the room has a new moderation, and at most 1000 joins wait for a replay at once. A room
 with logging off has no archive, and nothing is replayed in it.
+
+### Moderations made before 0.1.3
+
+At every start, `MessageArchive.backfill` tombstones Monitoring's copy of every message the plugin
+has already moderated, reading each moderation back from its tombstone in `ofMucConversationLog`.
+The new tombstone carries the same `<retracted/>` element (moderator, reason, time). Copies that
+are already tombstoned are skipped, so it is safe to run on every start and on every node at
+once. It also catches up any copy Monitoring had not yet written when its moderation ran.
 
 ### Service discovery
 
@@ -271,7 +288,7 @@ moderation happened:
 ## Testing
 
 ```bash
-mvn test                                     # 38 unit tests, no server needed
+mvn test                                     # 41 unit tests, no server needed
 python3 tools/live_check.py [--insecure]     # end to end, against a real server
 ```
 
@@ -323,6 +340,7 @@ src/main/java/com/igniterealtime/openfire/plugin/moderation/
   ModerationReplay.java       re-sends recent moderations to occupants as they join
   Retraction.java             builds the announcement, tombstone and replay (pure, tested)
   ConversationLog.java        finds and rewrites the row in ofMucConversationLog
+  MessageArchive.java         the same in Monitoring's ofMessageArchive, which MAM is served from
   RoomHistory.java            rewrites the join-history cache under core's lock
   ModerationProperties.java   the two system properties
   ModerationException.java    an error condition to answer with
@@ -336,8 +354,18 @@ deploy.sh                     build and deploy to the test server
 
 ## Status
 
-**0.1.2.** Builds against Openfire 5.0.5 and 5.1.0 and passes its unit tests. 0.1.1 runs on
-Openfire 5.1.0; 0.1.2 is **not yet deployed**.
+**0.1.3.** Builds against Openfire 5.0.5 and 5.1.0 and passes its unit tests. 0.1.1 runs on
+Openfire 5.1.0, and 0.1.3 was deployed to the test server on 2026-10-09.
+
+- **0.1.3 fixes moderated messages coming back from MAM.** Monitoring serves MUC MAM from its own
+  `ofMessageArchive` by default, and 0.1.2 only tombstoned core's `ofMucConversationLog`. A
+  Conversations client that cleared its history and reloaded got the text back. Confirmed on the
+  test server: rows 1060 and 1061 of `ofMessageArchive` still held the full text of two messages
+  whose `ofMucConversationLog` rows were tombstones. 0.1.3 rewrites both tables, and at start it
+  tombstones Monitoring's copy of every earlier moderation. Verified on deploy: the start-up
+  backfill tombstoned 16 earlier moderations in `ofMessageArchive`, rows 1060 and 1061 among
+  them, with no text left. A fresh moderation followed by a MAM reload in Conversations is
+  **not yet confirmed**.
 
 - **0.1.2 is a standards pass** ([docs/java-code-standards.md](docs/java-code-standards.md)). It
   makes no protocol change and fixes two defects. A start that failed part-way left the
@@ -353,6 +381,14 @@ Openfire 5.1.0; 0.1.2 is **not yet deployed**.
 - `tools/live_check.py` has not been run yet.
 
 Known limitations:
+
+- **Monitoring's full-text index.** If Monitoring's Lucene search is on, its index keeps the words
+  of a moderated message until the index is rebuilt. A search can then match it, though the result
+  it returns is the tombstone. Rebuild the index from Monitoring's admin page after moderating
+  sensitive content.
+- **Monitoring copies without a stanza.** With `conversation.roomArchivingStanzas` off (it is on by
+  default), Monitoring stores no stanza, so its copy can't be matched by stanza-id and isn't
+  tombstoned.
 
 - **Offline clients are reached on their next join, within the replay window.** A client that is
   offline longer than `replay.days` past the message, or that never rejoins the room, keeps its

@@ -17,12 +17,14 @@ import org.xmpp.packet.PacketError;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 
 /**
  * Carries out a moderation request: authorize, find the message, tombstone it in the archive and
@@ -31,15 +33,17 @@ import java.util.concurrent.TimeUnit;
  * <h2>Why off the calling thread</h2>
  * The request is intercepted on the thread reading the moderator's connection, and the message it
  * names may not be in the database yet: core logs room messages in batches through an
- * {@link Archiver}, so a moderator quick to react can name a message that is still in that queue.
- * Waiting for it there would stall everything else that connection sends. So requests are queued
- * to a single worker thread, which also means two moderations of the same room never interleave.
+ * {@link Archiver}, and the Monitoring plugin keeps its own copy through a queue of its own, so a
+ * moderator quick to react can name a message that is still in either queue. Waiting for it there
+ * would stall everything else that connection sends. So requests are queued to a single worker
+ * thread, which also means two moderations of the same room never interleave.
  *
  * <h2>Order of effects</h2>
- * The archive is rewritten first, then the history, then the room is told, then the moderator gets
- * the result. Every step that can fail comes before the announcement, so a failure leaves clients
- * still showing the message — wrong, but visibly so, and the moderator gets an error and can retry
- * — rather than clients deleting a message the server still serves to the next joiner.
+ * The archives are rewritten first (core's conversation log, then Monitoring's copy), then the
+ * history, then the room is told, then the moderator gets the result. Every step that can fail
+ * comes before the announcement, so a failure leaves clients still showing the message — wrong,
+ * but visibly so, and the moderator gets an error and can retry — rather than clients deleting a
+ * message the server still serves to the next joiner.
  */
 final class ModerationHandler {
 
@@ -164,13 +168,22 @@ final class ModerationHandler {
 
         Optional<Message> inHistory =
             RoomHistory.find(room.getRoomHistory().getMessageHistory(), roomJid, stanzaId);
+        Instant deadline = Instant.now().plus(MAX_ARCHIVE_WAIT);
         Optional<ConversationLog.Entry> inArchive = Optional.empty();
         if (room.isLogEnabled()) {
-            awaitArchive(service, received);
+            awaitArchive("Conversation log", service.getArchiver()::availabilityETA, received, deadline);
             inArchive = ConversationLog.find(room.getID(), roomJid, stanzaId);
         }
+        boolean monitoring = MessageArchive.installed();
+        if (monitoring) {
+            awaitArchive("Monitoring's archive", MessageArchive::availabilityETA, received, deadline);
+        }
+        List<ConversationLog.Entry> inMonitoring =
+            monitoring ? MessageArchive.find(roomJid, stanzaId) : List.of();
 
-        Message original = inArchive.map(ConversationLog.Entry::stanza).or(() -> inHistory)
+        Message original = inArchive.map(ConversationLog.Entry::stanza)
+            .or(() -> inMonitoring.stream().findFirst().map(ConversationLog.Entry::stanza))
+            .or(() -> inHistory)
             .orElseThrow(() -> new ModerationException(PacketError.Condition.item_not_found,
                 "no message with stanza-id " + stanzaId + " in history or archive"));
         if (Retraction.isSubjectChange(original)) {
@@ -188,6 +201,13 @@ final class ModerationHandler {
             archived = ConversationLog.replace(room.getID(), entry.messageId(),
                 Retraction.tombstone(entry.stanza(), by, now));
         }
+        // Monitoring's own copy is what MAM serves by default; see MessageArchive.
+        int monitored = 0;
+        for (ConversationLog.Entry entry : inMonitoring) {
+            if (MessageArchive.replace(roomJid, entry.messageId(), Retraction.tombstone(entry.stanza(), by, now))) {
+                monitored++;
+            }
+        }
         boolean history = inHistory.isPresent()
             && RoomHistory.replace(roomJid, stanzaId, m -> Retraction.tombstone(m, by, now));
         if (inHistory.isPresent() && !history) {
@@ -201,31 +221,55 @@ final class ModerationHandler {
         replay.forget(roomJid);
 
         // Who and where, never what: the moderated text stays out of the log (ACM 1.6).
-        Log.info("{} moderated message {} from {} in {} (archive: {}, history: {})",
+        Log.info("{} moderated message {} from {} in {} (archive: {}, Monitoring archive: {}, history: {})",
             moderator.getOccupantJID().getResource(), stanzaId,
             original.getFrom() == null ? null : original.getFrom().getResource(), roomJid,
-            archived ? "tombstoned" : "not logged", history ? "tombstoned" : "not present");
+            archived ? "tombstoned" : "not logged", monitored > 0 ? "tombstoned" : "not archived",
+            history ? "tombstoned" : "not present");
     }
 
     /**
-     * Waits until core's conversation log has stored everything up to {@code received}, or
-     * {@link #MAX_ARCHIVE_WAIT} passes. On timeout it returns anyway: the lookup that follows
-     * then finds the message in the history alone, or answers item-not-found, which a moderator
-     * can retry — better than holding their request open indefinitely.
+     * Queues {@link MessageArchive#backfill} behind any moderation already queued, so the two
+     * never interleave. Called once at start; a failure is logged and retried at the next start.
      */
-    private static void awaitArchive(MultiUserChatService service, Instant received)
-            throws InterruptedException {
-        Archiver<?> archiver = service.getArchiver();
-        Instant deadline = Instant.now().plus(MAX_ARCHIVE_WAIT);
+    void backfillMonitoring() {
+        try {
+            worker.execute(() -> {
+                try {
+                    int rewritten = MessageArchive.backfill();
+                    if (rewritten > 0) {
+                        Log.info("Tombstoned {} earlier moderated message(s) in Monitoring's archive", rewritten);
+                    }
+                } catch (Exception e) {
+                    Log.warn("Could not tombstone earlier moderations in Monitoring's archive; "
+                        + "will retry at next start", e);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            Log.warn("Moderation queue full at start; earlier moderations not checked in Monitoring's archive");
+        }
+    }
+
+    /**
+     * Waits until an archive has stored everything up to {@code received}, or {@code deadline}
+     * passes. On timeout it returns anyway: the lookup that follows then finds the message in the
+     * other stores alone, or answers item-not-found, which a moderator can retry — better than
+     * holding their request open indefinitely.
+     *
+     * @param eta how far behind the archive is, for a given instant; null or not positive when
+     *            it has caught up
+     */
+    private static void awaitArchive(String name, Function<Instant, Duration> eta, Instant received,
+            Instant deadline) throws InterruptedException {
         while (true) {
-            Duration eta = archiver.availabilityETA(received);
-            if (eta == null || eta.isZero() || eta.isNegative()) return;
+            Duration behind = eta.apply(received);
+            if (behind == null || behind.isZero() || behind.isNegative()) return;
             if (Instant.now().isAfter(deadline)) {
-                Log.warn("Conversation log still {} ms behind after {} s; looking up anyway",
-                    eta.toMillis(), MAX_ARCHIVE_WAIT.toSeconds());
+                Log.warn("{} still {} ms behind after {} s; looking up anyway",
+                    name, behind.toMillis(), MAX_ARCHIVE_WAIT.toSeconds());
                 return;
             }
-            Thread.sleep(Math.min(eta.toMillis() + 1, ARCHIVE_POLL_MILLIS));
+            Thread.sleep(Math.min(behind.toMillis() + 1, ARCHIVE_POLL_MILLIS));
         }
     }
 
